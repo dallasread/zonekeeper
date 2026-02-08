@@ -4,6 +4,8 @@ A macOS desktop app for managing DNS zones locally. Edit zone files in a UI, ser
 
 Built for developers who need a local authoritative DNS server with zone transfer support.
 
+![Zonekeeper](screenshot.png)
+
 ## What It Does
 
 - **Edit zone files** with inline validation (catches invalid record types, missing TTLs)
@@ -209,10 +211,3 @@ zonekeeper/
 └── tsconfig.node.json
 ```
 
-## What's Next
-
-- [ ] Download and bundle CoreDNS binary as a Tauri resource
-- [ ] Stream CoreDNS stdout/stderr to log viewer via Tauri events
-- [ ] SIGUSR1 reload on zone save (no restart needed)
-- [ ] AXFR verification button (runs `dig axfr` and shows result)
-- [ ] Syntax highlighting in zone editor (beyond validation)
