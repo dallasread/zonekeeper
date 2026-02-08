@@ -1,0 +1,9 @@
+{
+  "identifier": "default",
+  "windows": ["main", "zk-*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-create",
+    "core:window:allow-center"
+  ]
+}

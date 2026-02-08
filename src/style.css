@@ -1,0 +1,33 @@
+@import 'tailwindcss';
+
+body {
+  background-color: #1e1e1e;
+  color: #cccccc;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  margin: 0;
+  overflow: hidden;
+}
+
+code {
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+}
+
+/* Zone file syntax highlighting */
+.hl-comment { color: #6a9955; }
+.hl-directive { color: #c586c0; }
+.hl-type { color: #569cd6; }
+.hl-class { color: #4ec9b0; }
+.hl-ttl { color: #b5cea8; }
+.hl-value { color: #ce9178; }
+.hl-origin { color: #dcdcaa; }
+
+/* Diff highlighting */
+.diff-add { background-color: rgba(34, 197, 94, 0.15); color: #6ee7b7; }
+.diff-remove { background-color: rgba(239, 68, 68, 0.15); color: #fca5a5; }
+.diff-char-add { background-color: rgba(34, 197, 94, 0.4); border-radius: 2px; }
+.diff-char-remove { background-color: rgba(239, 68, 68, 0.4); border-radius: 2px; }
