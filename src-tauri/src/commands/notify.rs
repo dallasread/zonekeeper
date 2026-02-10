@@ -53,8 +53,13 @@ pub async fn send_notify(zone: String, target: String) -> Result<String, String>
     let addr: std::net::SocketAddr = target.parse().map_err(|e| format!("Invalid target: {}", e))?;
     let pkt = build_notify_packet(&zone);
 
-    // Bind to loopback when sending to loopback so CoreDNS sees 127.0.0.1 as source
-    let bind_addr = if addr.ip().is_loopback() { "127.0.0.1:0" } else { "0.0.0.0:0" };
+    // Bind to matching address family so source IP matches the target
+    let bind_addr = match &addr {
+        std::net::SocketAddr::V6(a) if a.ip().is_loopback() => "[::1]:0",
+        std::net::SocketAddr::V6(_) => "[::]:0",
+        std::net::SocketAddr::V4(a) if a.ip().is_loopback() => "127.0.0.1:0",
+        _ => "0.0.0.0:0",
+    };
     let socket = UdpSocket::bind(bind_addr).map_err(|e| format!("Bind failed: {}", e))?;
     socket.set_read_timeout(Some(Duration::from_secs(3))).ok();
     socket.send_to(&pkt, addr).map_err(|e| format!("Send failed: {}", e))?;
