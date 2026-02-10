@@ -1,7 +1,7 @@
 use std::net::UdpSocket;
 use std::time::Duration;
 use tauri::{AppHandle, Manager, WebviewWindowBuilder, WebviewUrl};
-use crate::{config, paths};
+use crate::{config, docker_proxy, paths};
 
 fn encode_name(name: &str) -> Vec<u8> {
     let mut buf = Vec::new();
@@ -41,28 +41,21 @@ fn rand_id() -> u16 {
     (t & 0xFFFF) as u16
 }
 
-#[tauri::command]
-pub async fn send_notify(zone: String, target: String) -> Result<String, String> {
-    let zone = zone.to_lowercase();
-    let target = if !target.contains(':') {
-        format!("{}:53", target)
-    } else {
-        target
-    };
+fn is_loopback_target(addr: &std::net::SocketAddr) -> bool {
+    match addr {
+        std::net::SocketAddr::V4(a) => a.ip().is_loopback(),
+        std::net::SocketAddr::V6(a) => a.ip().is_loopback(),
+    }
+}
 
-    let addr: std::net::SocketAddr = target.parse().map_err(|e| format!("Invalid target: {}", e))?;
-    let pkt = build_notify_packet(&zone);
-
-    // Bind to matching address family so source IP matches the target
-    let bind_addr = match &addr {
-        std::net::SocketAddr::V6(a) if a.ip().is_loopback() => "[::1]:0",
+fn send_udp_notify(pkt: &[u8], addr: &std::net::SocketAddr) -> Result<String, String> {
+    let bind_addr = match addr {
         std::net::SocketAddr::V6(_) => "[::]:0",
-        std::net::SocketAddr::V4(a) if a.ip().is_loopback() => "127.0.0.1:0",
-        _ => "0.0.0.0:0",
+        std::net::SocketAddr::V4(_) => "0.0.0.0:0",
     };
     let socket = UdpSocket::bind(bind_addr).map_err(|e| format!("Bind failed: {}", e))?;
     socket.set_read_timeout(Some(Duration::from_secs(3))).ok();
-    socket.send_to(&pkt, addr).map_err(|e| format!("Send failed: {}", e))?;
+    socket.send_to(pkt, addr).map_err(|e| format!("Send failed: {}", e))?;
 
     let mut buf = [0u8; 512];
     match socket.recv_from(&mut buf) {
@@ -76,6 +69,74 @@ pub async fn send_notify(zone: String, target: String) -> Result<String, String>
         Ok(_) => Err(format!("Invalid response from {}", addr)),
         Err(_) => Ok(format!("NOTIFY sent to {} (no response)", addr)),
     }
+}
+
+#[tauri::command]
+pub async fn send_notify(zone: String, target: String, identity: String, coredns_port: u16) -> Result<String, String> {
+    let zone = zone.to_lowercase();
+    let target = if !target.contains(':') {
+        format!("{}:53", target)
+    } else {
+        target
+    };
+
+    let addr: std::net::SocketAddr = target.parse().map_err(|e| format!("Invalid target: {}", e))?;
+    let pkt = build_notify_packet(&zone);
+
+    if !is_loopback_target(&addr) {
+        return send_udp_notify(&pkt, &addr);
+    }
+
+    // Loopback target — try Docker proxy, fall back to direct send
+    let proxy = match docker_proxy::status(&identity) {
+        Some(info) => Some(info),
+        None => {
+            match docker_proxy::detect_target(addr.port()) {
+                Ok(docker_target) => Some(docker_proxy::start(
+                    &identity,
+                    &docker_target.network,
+                    &docker_target.container_ip,
+                    docker_target.internal_port,
+                    coredns_port,
+                ).map_err(|e| format!("Docker proxy failed to start: {}", e))?),
+                Err(_) => None,
+            }
+        }
+    };
+
+    if proxy.is_none() {
+        return send_udp_notify(&pkt, &addr);
+    }
+    let proxy = proxy.unwrap();
+
+    let proxy_addr: std::net::SocketAddr = format!("127.0.0.1:{}", proxy.mapped_port)
+        .parse().map_err(|e| format!("Invalid proxy address: {}", e))?;
+
+    let result = send_udp_notify(&pkt, &proxy_addr)?;
+    Ok(format!("{}. Master IP: {}:{}", result, proxy.bridge_ip, coredns_port))
+}
+
+#[tauri::command]
+pub async fn start_docker_proxy(identity: String, target_port: u16, coredns_port: u16) -> Result<String, String> {
+    let docker_target = docker_proxy::detect_target(target_port)?;
+    let info = docker_proxy::start(
+        &identity,
+        &docker_target.network,
+        &docker_target.container_ip,
+        docker_target.internal_port,
+        coredns_port,
+    )?;
+    Ok(format!("Proxy started. Master IP: {}:{}", info.bridge_ip, coredns_port))
+}
+
+#[tauri::command]
+pub async fn stop_docker_proxy(identity: String) -> Result<(), String> {
+    docker_proxy::stop(&identity)
+}
+
+#[tauri::command]
+pub async fn docker_proxy_status(identity: String) -> Result<Option<String>, String> {
+    Ok(docker_proxy::status(&identity).map(|info| info.bridge_ip))
 }
 
 #[tauri::command]

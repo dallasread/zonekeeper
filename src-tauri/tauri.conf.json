@@ -28,6 +28,7 @@
     "active": true,
     "targets": "all",
     "externalBin": ["binaries/coredns"],
+    "resources": ["resources/dns-proxy-linux-arm64"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -135,9 +135,30 @@ export default class Commands {
 
   async sendNotify(zoneName: string, target: string): Promise<string> {
     this.addLog({ message: `Sending NOTIFY for ${zoneName} to ${target}`, level: 'info' })
-    const result = await invoke<string>('send_notify', { zone: zoneName, target })
+    const result = await invoke<string>('send_notify', {
+      zone: zoneName,
+      target,
+      identity: this.getIdentity(),
+      corednsPort: this.getPort(),
+    })
     this.addLog({ message: `${result} for ${zoneName}`, level: 'info' })
     return result
+  }
+
+  async startDockerProxy(targetPort: number): Promise<string> {
+    return invoke<string>('start_docker_proxy', {
+      identity: this.getIdentity(),
+      targetPort,
+      corednsPort: this.getPort(),
+    })
+  }
+
+  async stopDockerProxy(): Promise<void> {
+    await invoke('stop_docker_proxy', { identity: this.getIdentity() })
+  }
+
+  async dockerProxyStatus(): Promise<string | null> {
+    return invoke<string | null>('docker_proxy_status', { identity: this.getIdentity() })
   }
 
   async openWindow(identity: string, port: number) {

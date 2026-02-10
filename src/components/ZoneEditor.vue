@@ -398,8 +398,9 @@ export default {
         this.app.notifyTarget = target
         this.app.saveConfig()
         const result = await this.app.commands.sendNotify(this.zone.name, target)
+        const hasProxy = result.includes('Master IP:')
         this.notifyStatus = { ok: true, message: result }
-        setTimeout(() => { this.showNotifyDialog = false }, 800)
+        if (!hasProxy) setTimeout(() => { this.showNotifyDialog = false }, 800)
       } catch (e) {
         this.notifyStatus = { ok: false, message: String(e) }
       }
