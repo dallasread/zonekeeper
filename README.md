@@ -180,6 +180,34 @@ dig @127.0.0.1 -p 1053 example.com SOA
 |-------|-----------|---------|
 | `log-line` | Rust → Frontend | `{ message, level }` |
 
+## Releasing
+
+```bash
+# 1. Bump version in all three files
+#    - package.json
+#    - src-tauri/Cargo.toml
+#    - src-tauri/tauri.conf.json
+
+# 2. Build signed DMG
+APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAM_ID)" npm run tauri build
+
+# 3. Verify signature
+codesign -dv --verbose=2 src-tauri/target/release/bundle/dmg/ZoneKeeper_*.dmg
+
+# 4. Commit, tag, push
+git add -A && git commit -m "v0.2.0"
+git tag v0.2.0
+git push && git push --tags
+
+# 5. Create GitHub release with DMG
+gh release create v0.2.0 \
+  src-tauri/target/release/bundle/dmg/ZoneKeeper_*.dmg \
+  --title "v0.2.0" \
+  --notes "Release notes here"
+```
+
+The DMG is signed with a Developer ID certificate. Tauri signs the .app bundle, embedded binaries (CoreDNS), and the DMG automatically when `APPLE_SIGNING_IDENTITY` is set.
+
 ## Project Structure
 
 ```
