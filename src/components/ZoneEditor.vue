@@ -40,12 +40,12 @@ export default {
       showDigInfo: false,
       copiedCmd: null,
       showSaveDialog: false,
+      notifyOnly: false,
       bumpSerial: true,
-      showNotifyDialog: false,
-      notifyTarget: '',
-      notifySending: false,
-      notifyStatus: null,
-      notifyAddresses: [],
+      formatZone: true,
+      notifySelections: {},
+      notifyServersParsed: [],
+      notifyResults: [],
       pulling: false,
       showTemplates: false,
       acSuggestions: [],
@@ -83,6 +83,14 @@ export default {
 
     templates() {
       return RECORD_TEMPLATES
+    },
+
+    notifyDone() {
+      return this.notifyResults.length > 0 && this.notifyResults.every(r => r.status !== 'sending')
+    },
+
+    notifyHasErrors() {
+      return this.notifyResults.some(r => r.status === 'error')
     },
 
     zoneHostnames() {
@@ -162,26 +170,27 @@ export default {
     },
     showSaveDialog(val) {
       if (val) {
-        this.bumpSerial = true
+        this.bumpSerial = this.app.autoBumpSerial !== false
+        this.formatZone = this.app.autoFormat !== false
+        this.notifyResults = []
+        const servers = (this.app.notifyServers || []).map(s => {
+          const [addr, ...rest] = s.split(';')
+          return { address: addr.trim(), label: rest.join(';').trim() }
+        }).filter(s => s.address)
+        const saved = (this.app.zoneNotify || {})[this.zone.name]
+        this.notifyServersParsed = servers
+        const selections = {}
+        for (const s of servers) {
+          selections[s.address] = saved ? saved.includes(s.address) : true
+        }
+        this.notifySelections = selections
         this.$nextTick(() => this.$refs.commitInput?.focus())
-      }
-    },
-    async showNotifyDialog(val) {
-      if (val) {
-        this.$nextTick(() => this.$refs.notifyInput?.focus())
-        const ids = await this.app.commands.listIdentities()
-        const others = ids.filter(i => i.id !== this.app.identity)
-        this.notifyAddresses = await Promise.all(others.map(async i => {
-          const cfg = await this.app.commands.getConfigFor(i.id)
-          return { identity: i.name, address: `127.0.0.1:${cfg.port}` }
-        }))
       }
     },
   },
 
   async mounted() {
     this.errors = validateContent(this.content)
-    this.notifyTarget = this.app.notifyTarget || ''
     try {
       const fresh = await this.app.commands.readZone(this.zone.id)
       if (fresh && fresh !== this.content) {
@@ -235,18 +244,54 @@ export default {
     },
 
     async save() {
-      if (this.errors.length) return
-      this.saving = true
-      this.app.autoBumpSerial = this.bumpSerial
-      this.app.saveConfig()
-      const msg = this.commitMsg.trim() || `Update ${this.zone.name}`
-      await this.app.commands.updateZone(this.zone, this.content, msg)
-      this.commitMsg = ''
-      this.showSaveDialog = false
-      this.saving = false
-      this.saved = true
-      clearTimeout(this._savedTimer)
-      this._savedTimer = setTimeout(() => { this.saved = false }, 2000)
+      if (!this.notifyOnly) {
+        if (this.errors.length) return
+        this.saving = true
+        this.app.autoBumpSerial = this.bumpSerial
+        this.app.autoFormat = this.formatZone
+        this.app.saveConfig()
+        const msg = this.commitMsg.trim() || `Update ${this.zone.name}`
+        await this.app.commands.updateZone(this.zone, this.content, msg)
+        this.commitMsg = ''
+        this.saving = false
+        this.saved = true
+        clearTimeout(this._savedTimer)
+        this._savedTimer = setTimeout(() => { this.saved = false }, 2000)
+      }
+
+      const targets = Object.entries(this.notifySelections).filter(([, v]) => v).map(([k]) => k)
+      this.app.commands.setZoneNotify(this.zone.name, targets)
+      this.app.zoneNotify = { ...this.app.zoneNotify, [this.zone.name]: targets }
+
+      if (targets.length) {
+        this.notifyResults = targets.map(t => ({ target: t, status: 'sending' }))
+        for (const entry of this.notifyResults) {
+          this.app.commands.sendNotify(this.zone.name, entry.target).then(result => {
+            entry.status = 'ok'
+            entry.message = result
+          }).catch(e => {
+            entry.status = 'error'
+            entry.message = String(e)
+          })
+        }
+      } else {
+        this.showSaveDialog = false
+      }
+    },
+
+    retryNotify() {
+      const failed = this.notifyResults.filter(r => r.status === 'error')
+      for (const entry of failed) {
+        entry.status = 'sending'
+        entry.message = ''
+        this.app.commands.sendNotify(this.zone.name, entry.target).then(result => {
+          entry.status = 'ok'
+          entry.message = result
+        }).catch(e => {
+          entry.status = 'error'
+          entry.message = String(e)
+        })
+      }
     },
 
     flashMessage(msg) {
@@ -261,6 +306,12 @@ export default {
         this.flashMessage(`${this.errors.length} validation error${this.errors.length === 1 ? '' : 's'}`)
         return
       }
+      this.notifyOnly = false
+      this.showSaveDialog = true
+    },
+
+    tryNotify() {
+      this.notifyOnly = true
       this.showSaveDialog = true
     },
 
@@ -389,24 +440,6 @@ export default {
       this.pulling = false
     },
 
-    async sendNotify() {
-      const target = this.notifyTarget.trim()
-      if (!target) return
-      this.notifySending = true
-      this.notifyStatus = null
-      try {
-        this.app.notifyTarget = target
-        this.app.saveConfig()
-        const result = await this.app.commands.sendNotify(this.zone.name, target)
-        const hasProxy = result.includes('Master IP:')
-        this.notifyStatus = { ok: true, message: result }
-        if (!hasProxy) setTimeout(() => { this.showNotifyDialog = false }, 800)
-      } catch (e) {
-        this.notifyStatus = { ok: false, message: String(e) }
-      }
-      this.notifySending = false
-    },
-
     onScroll(e) {
       this.$refs.backdrop.scrollTop = e.target.scrollTop
       this.$refs.backdrop.scrollLeft = e.target.scrollLeft
@@ -473,9 +506,9 @@ export default {
           </span>
           <span v-if="saved" class="text-xs text-green-400">Saved</span>
           <button
-            @click="showNotifyDialog = true"
-            :disabled="dirty"
-            class="px-3 py-1 text-xs rounded text-white disabled:opacity-50 disabled:cursor-not-allowed bg-amber-600 hover:bg-amber-700 cursor-pointer"
+            v-if="notifyServersParsed.length || app.notifyServers?.length"
+            @click="tryNotify"
+            class="px-3 py-1 text-xs rounded text-amber-300 hover:bg-amber-900/30 cursor-pointer"
           >Notify</button>
           <button
             @click="trySave"
@@ -624,68 +657,84 @@ export default {
         @keydown.escape="showSaveDialog = false"
       >
         <div class="bg-[#1e1e1e] border border-[#3e3e42] rounded-lg shadow-2xl p-6 w-full max-w-md">
-          <h2 class="text-sm font-semibold text-[#ddd] mb-4">Save {{ zone.name }}</h2>
-          <input
-            ref="commitInput"
-            v-model="commitMsg"
-            :placeholder="`Update ${zone.name}`"
-            class="w-full bg-[#252526] border border-[#3e3e42] rounded px-3 py-2 text-sm text-[#ccc] focus:border-blue-500 focus:outline-none placeholder-[#555]"
-            @keydown.enter="save"
-          />
-          <label class="flex items-center gap-2 mt-3 cursor-pointer">
-            <input type="checkbox" v-model="bumpSerial" class="accent-blue-500" />
-            <span class="text-xs text-[#888]">Bump serial</span>
-          </label>
+          <h2 class="text-sm font-semibold text-[#ddd] mb-4">{{ notifyOnly ? 'Notify' : 'Save' }} {{ zone.name }}</h2>
+          <template v-if="!notifyOnly">
+            <input
+              ref="commitInput"
+              v-model="commitMsg"
+              :placeholder="`Update ${zone.name}`"
+              class="w-full bg-[#252526] border border-[#3e3e42] rounded px-3 py-2 text-sm text-[#ccc] focus:border-blue-500 focus:outline-none placeholder-[#555]"
+              @keydown.enter="save"
+            />
+            <div class="flex gap-4 mt-3">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" v-model="bumpSerial" class="accent-blue-500" />
+                <span class="text-xs text-[#888]">Bump serial</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" v-model="formatZone" class="accent-blue-500" />
+                <span class="text-xs text-[#888]">Format records</span>
+              </label>
+            </div>
+          </template>
+          <div v-if="notifyServersParsed.length" :class="notifyOnly ? '' : 'mt-3 border-t border-[#3e3e42] pt-3'">
+            <span v-if="!notifyOnly && !notifyResults.length" class="text-xs text-[#888] block mb-2">Notify on save</span>
+            <div class="space-y-1">
+              <div
+                v-for="s in notifyServersParsed"
+                :key="s.address"
+                class="flex items-center gap-2 rounded px-2 py-1 text-xs transition-colors duration-200"
+                :class="{
+                  'bg-green-950/40': notifyResults.find(r => r.target === s.address)?.status === 'ok',
+                  'bg-red-950/40': notifyResults.find(r => r.target === s.address)?.status === 'error',
+                }"
+              >
+                <input
+                  v-if="!notifyResults.length"
+                  type="checkbox"
+                  :checked="notifySelections[s.address]"
+                  @change="notifySelections[s.address] = $event.target.checked"
+                  class="accent-amber-500 cursor-pointer"
+                />
+                <template v-else-if="notifySelections[s.address]">
+                  <svg v-if="notifyResults.find(r => r.target === s.address)?.status === 'sending'" class="w-3.5 h-3.5 text-[#666] shrink-0 animate-spin" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.451a.75.75 0 0 0 0-1.5H4.5a.75.75 0 0 0-.75.75v3.75a.75.75 0 0 0 1.5 0v-2.136l.312.311a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39l-.013.048Zm.002-2.856a.75.75 0 0 0 .449-.192A7 7 0 0 0 4.185 5.382a.75.75 0 0 0 1.449.39l.013-.049a5.5 5.5 0 0 1 9.201-2.466l.312.311H12.75a.75.75 0 0 0 0 1.5H16.5a.75.75 0 0 0 .75-.75V.568a.75.75 0 0 0-1.5 0v2.136l-.312-.311a7 7 0 0 0-3.124-1.837Z" clip-rule="evenodd"/></svg>
+                  <svg v-else-if="notifyResults.find(r => r.target === s.address)?.status === 'ok'" class="w-3.5 h-3.5 text-green-400 shrink-0" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 0 1 .143 1.052l-8 10.5a.75.75 0 0 1-1.127.075l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 0 1 1.05-.143Z" clip-rule="evenodd"/></svg>
+                  <svg v-else class="w-3.5 h-3.5 text-red-400 shrink-0" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0ZM8.28 7.22a.75.75 0 0 0-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 1 0 1.06 1.06L10 11.06l1.72 1.72a.75.75 0 1 0 1.06-1.06L11.06 10l1.72-1.72a.75.75 0 0 0-1.06-1.06L10 8.94 8.28 7.22Z" clip-rule="evenodd"/></svg>
+                </template>
+                <span v-else class="w-3.5 shrink-0"></span>
+                <span v-if="s.label" class="text-[#ccc] shrink-0 whitespace-nowrap">{{ s.label }}</span>
+                <span class="font-mono shrink-0 whitespace-nowrap" :class="s.label ? 'text-[#555]' : 'text-[#ccc]'">{{ s.address }}</span>
+                <span
+                  v-if="notifyResults.find(r => r.target === s.address)?.status === 'error'"
+                  class="ml-auto text-red-400/80 truncate min-w-0"
+                  :title="notifyResults.find(r => r.target === s.address)?.message"
+                >{{ notifyResults.find(r => r.target === s.address)?.message }}</span>
+              </div>
+            </div>
+          </div>
           <div class="flex justify-end gap-2 mt-4">
             <button
+              v-if="!notifyDone"
               @click="showSaveDialog = false"
               class="px-3 py-1.5 text-xs rounded text-[#888] hover:text-white hover:bg-[#2a2d2e] cursor-pointer"
             >Cancel</button>
             <button
-              @click="save"
-              :disabled="saving"
-              class="px-3 py-1.5 text-xs rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 cursor-pointer"
-            >{{ saving ? 'Saving...' : 'Save' }}</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
-
-    <!-- Notify dialog -->
-    <Teleport to="body">
-      <div
-        v-if="showNotifyDialog"
-        class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-        @click.self="showNotifyDialog = false"
-        @keydown.escape="showNotifyDialog = false"
-      >
-        <div class="bg-[#1e1e1e] border border-[#3e3e42] rounded-lg shadow-2xl p-6 w-full max-w-sm">
-          <h2 class="text-sm font-semibold text-[#ddd] mb-4">Send NOTIFY for {{ zone.name }}</h2>
-          <label class="text-xs text-[#888] mb-1 block">Target (ip:port)</label>
-          <input
-            ref="notifyInput"
-            v-model="notifyTarget"
-            placeholder="192.168.1.1:53"
-            list="notify-target-options"
-            class="w-full bg-[#252526] border border-[#3e3e42] rounded px-3 py-2 text-sm text-[#ccc] focus:border-blue-500 focus:outline-none placeholder-[#555] font-mono"
-            @keydown.enter="sendNotify"
-          />
-          <datalist id="notify-target-options">
-            <option v-for="o in notifyAddresses" :key="o.identity" :value="o.address">{{ o.identity }}</option>
-          </datalist>
-          <div v-if="notifyStatus" class="mt-2 text-xs" :class="notifyStatus.ok ? 'text-green-400' : 'text-red-400'">
-            {{ notifyStatus.message }}
-          </div>
-          <div class="flex justify-end gap-2 mt-4">
+              v-if="notifyDone && notifyHasErrors"
+              @click="retryNotify"
+              class="px-3 py-1.5 text-xs rounded bg-amber-600 hover:bg-amber-700 text-white cursor-pointer"
+            >Retry failed</button>
             <button
-              @click="showNotifyDialog = false"
-              class="px-3 py-1.5 text-xs rounded text-[#888] hover:text-white hover:bg-[#2a2d2e] cursor-pointer"
+              v-if="notifyDone"
+              @click="showSaveDialog = false"
+              class="px-3 py-1.5 text-xs rounded bg-[#2a2d2e] hover:bg-[#333] text-[#ccc] cursor-pointer"
             >Close</button>
             <button
-              @click="sendNotify"
-              :disabled="notifySending || !notifyTarget.trim()"
-              class="px-3 py-1.5 text-xs rounded bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-            >{{ notifySending ? 'Sending...' : 'Send' }}</button>
+              v-else
+              @click="save"
+              :disabled="saving || (notifyResults.length > 0)"
+              class="px-3 py-1.5 text-xs rounded text-white disabled:opacity-50 cursor-pointer"
+              :class="notifyOnly ? 'bg-amber-600 hover:bg-amber-700' : 'bg-blue-600 hover:bg-blue-700'"
+            >{{ saving ? 'Saving...' : notifyOnly ? 'Notify' : 'Save' }}</button>
           </div>
         </div>
       </div>

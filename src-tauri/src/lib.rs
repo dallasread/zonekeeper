@@ -7,7 +7,7 @@ pub mod paths;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::Manager;
-use commands::config::{get_config, set_config, get_app_config, set_app_config, nuke_app_data};
+use commands::config::{get_config, set_config, set_zone_notify, get_app_config, set_app_config, nuke_app_data};
 use commands::notify::{create_identity, delete_identity, docker_proxy_status, list_identities, open_window, rename_identity, send_notify, start_docker_proxy, stop_docker_proxy};
 use commands::server::{reload_server, server_status, start_server, stop_all_servers, stop_server, ServerState};
 use commands::zones::{create_zone, delete_zone, list_zones, pull_zone, read_zone, save_zone};
@@ -42,6 +42,7 @@ pub fn run() {
             rename_identity,
             delete_identity,
             nuke_app_data,
+            set_zone_notify,
             start_docker_proxy,
             stop_docker_proxy,
             docker_proxy_status,

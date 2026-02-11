@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use crate::paths;
 
@@ -17,6 +18,12 @@ pub struct Config {
     pub transfer_from: String,
     #[serde(default = "default_true")]
     pub auto_bump_serial: bool,
+    #[serde(default = "default_true")]
+    pub auto_format: bool,
+    #[serde(default)]
+    pub notify_servers: Vec<String>,
+    #[serde(default)]
+    pub zone_notify: HashMap<String, Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -35,7 +42,7 @@ fn default_true() -> bool {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { name: String::new(), port: 1053, font_size: 16, notify_target: String::new(), accept_transfers: false, transfer_from: String::new(), auto_bump_serial: true }
+        Config { name: String::new(), port: 1053, font_size: 16, notify_target: String::new(), accept_transfers: false, transfer_from: String::new(), auto_bump_serial: true, auto_format: true, notify_servers: Vec::new(), zone_notify: HashMap::new() }
     }
 }
 

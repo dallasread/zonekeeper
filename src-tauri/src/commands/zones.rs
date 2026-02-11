@@ -73,7 +73,7 @@ ns1     3600  IN  A    127.0.0.1
 #[tauri::command]
 pub async fn create_zone(identity: String, name: String, port: u16) -> Result<ZoneInfo, String> {
     let name = name.to_lowercase();
-    let path = paths::zones_dir(&identity).join(format!("{}.zone", name));
+    let path = paths::ensure_zones_dir(&identity).join(format!("{}.zone", name));
 
     if path.exists() {
         return Err(format!("Zone '{}' already exists", name));
@@ -107,9 +107,10 @@ pub async fn read_zone(identity: String, name: String) -> Result<String, String>
 #[tauri::command]
 pub async fn save_zone(identity: String, name: String, content: String, port: u16) -> Result<String, String> {
     let name = name.to_lowercase();
-    let path = paths::zones_dir(&identity).join(format!("{}.zone", name));
+    let path = paths::ensure_zones_dir(&identity).join(format!("{}.zone", name));
     let cfg = config::read_config(&identity);
     let content = if cfg.auto_bump_serial { bump_serial(&content) } else { content };
+    let content = if cfg.auto_format { format_zone(&content) } else { content };
     fs::write(&path, &content).map_err(|e| e.to_string())?;
     regenerate_corefile(&identity, port);
     Ok(content)
@@ -158,6 +159,187 @@ fn bump_serial(content: &str) -> String {
         }
     }
     lines.join("\n")
+}
+
+const CLASSES: &[&str] = &["IN", "CH", "HS", "CS"];
+const TYPES: &[&str] = &[
+    "A", "AAAA", "CNAME", "MX", "NS", "TXT", "SOA", "SRV", "CAA", "PTR",
+    "DNSKEY", "DS", "NAPTR", "SSHFP", "TLSA", "SPF", "HINFO", "LOC", "CERT",
+    "DNAME", "AFSDB", "CDNSKEY", "CDS", "DLV", "HTTPS", "NSEC", "NSEC3",
+    "NSEC3PARAM", "RRSIG", "SVCB", "URI",
+];
+
+fn is_ttl(s: &str) -> bool {
+    s.chars().next().map_or(false, |c| c.is_ascii_digit())
+        && s.trim_end_matches(|c: char| "smhdwSMHDW".contains(c))
+            .chars()
+            .all(|c| c.is_ascii_digit())
+}
+
+fn is_class(s: &str) -> bool {
+    CLASSES.iter().any(|c| c.eq_ignore_ascii_case(s))
+}
+
+fn is_type(s: &str) -> bool {
+    TYPES.iter().any(|t| t.eq_ignore_ascii_case(s))
+}
+
+struct RecordParts {
+    name: String,
+    ttl: String,
+    class: String,
+    rtype: String,
+    rdata: String,
+}
+
+fn parse_record(line: &str) -> Option<RecordParts> {
+    // Split off inline comment
+    let (body, comment) = match line.find(';') {
+        Some(pos) => {
+            // Don't split inside quoted strings
+            let before = &line[..pos];
+            let quotes = before.chars().filter(|&c| c == '"').count();
+            if quotes % 2 == 0 {
+                (&line[..pos], Some(&line[pos..]))
+            } else {
+                (line, None)
+            }
+        }
+        None => (line, None),
+    };
+
+    let tokens: Vec<&str> = body.split_whitespace().collect();
+    if tokens.len() < 2 { return None; }
+
+    let starts_with_space = line.starts_with(' ') || line.starts_with('\t');
+    let mut i = 0;
+    let name;
+
+    if starts_with_space {
+        name = String::new();
+    } else {
+        name = tokens[0].to_string();
+        i = 1;
+    }
+
+    let mut ttl = String::new();
+    let mut class = String::new();
+
+    // Parse optional TTL and class (in either order)
+    for _ in 0..2 {
+        if i >= tokens.len() { break; }
+        if ttl.is_empty() && is_ttl(tokens[i]) {
+            ttl = tokens[i].to_string();
+            i += 1;
+        } else if class.is_empty() && is_class(tokens[i]) {
+            class = tokens[i].to_string();
+            i += 1;
+        } else {
+            break;
+        }
+    }
+
+    if i >= tokens.len() { return None; }
+    if !is_type(tokens[i]) { return None; }
+
+    let rtype = tokens[i].to_uppercase();
+    i += 1;
+
+    let mut rdata = tokens[i..].join("  ");
+    if let Some(c) = comment {
+        if !rdata.is_empty() {
+            rdata.push_str("  ");
+        }
+        rdata.push_str(c.trim());
+    }
+
+    Some(RecordParts { name, ttl, class, rtype, rdata })
+}
+
+fn format_zone(content: &str) -> String {
+    enum Parsed {
+        Passthrough(String),
+        Record(RecordParts),
+    }
+
+    let mut items: Vec<Parsed> = Vec::new();
+    let mut in_parens = false;
+    let mut max_name: usize = 0;
+    let mut max_ttl: usize = 0;
+    let mut max_class: usize = 2; // minimum "IN"
+    let mut max_type: usize = 0;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Passthrough: blank, comment-only, directive
+        if trimmed.is_empty() || trimmed.starts_with(';') || trimmed.starts_with('$') {
+            items.push(Parsed::Passthrough(line.to_string()));
+            if trimmed.contains('(') && !trimmed.contains(')') { in_parens = true; }
+            continue;
+        }
+
+        // Inside parenthesized block (SOA continuation etc)
+        if in_parens {
+            items.push(Parsed::Passthrough(line.to_string()));
+            if trimmed.contains(')') { in_parens = false; }
+            continue;
+        }
+
+        // Check if this line opens parens (SOA first line)
+        let opens_parens = trimmed.contains('(');
+        if opens_parens {
+            items.push(Parsed::Passthrough(line.to_string()));
+            if !trimmed.contains(')') { in_parens = true; }
+            continue;
+        }
+
+        // Try to parse as a record
+        match parse_record(line) {
+            Some(rec) => {
+                if rec.name.len() > max_name { max_name = rec.name.len(); }
+                if rec.ttl.len() > max_ttl { max_ttl = rec.ttl.len(); }
+                if rec.class.len() > max_class { max_class = rec.class.len(); }
+                if rec.rtype.len() > max_type { max_type = rec.rtype.len(); }
+                items.push(Parsed::Record(rec));
+            }
+            None => {
+                items.push(Parsed::Passthrough(line.to_string()));
+            }
+        }
+    }
+
+    // Ensure minimums
+    if max_name < 1 { max_name = 1; }
+    if max_ttl < 1 { max_ttl = 1; }
+
+    let mut out = Vec::new();
+    for item in &items {
+        match item {
+            Parsed::Passthrough(line) => out.push(line.clone()),
+            Parsed::Record(rec) => {
+                let name_part = if rec.name.is_empty() {
+                    " ".repeat(max_name)
+                } else {
+                    format!("{:<width$}", rec.name, width = max_name)
+                };
+                let formatted = format!(
+                    "{}  {:<ttl_w$}  {:<cls_w$}  {:<typ_w$}  {}",
+                    name_part,
+                    rec.ttl,
+                    rec.class,
+                    rec.rtype,
+                    rec.rdata,
+                    ttl_w = max_ttl,
+                    cls_w = max_class,
+                    typ_w = max_type,
+                );
+                out.push(formatted.trim_end().to_string());
+            }
+        }
+    }
+
+    out.join("\n")
 }
 
 fn axfr_to_bind(raw: &str, zone: &str) -> Result<String, String> {
@@ -249,7 +431,7 @@ pub async fn pull_zone(identity: String, name: String, port: u16) -> Result<Stri
     };
 
     let content = axfr_from(&host, &dig_port, &name)?;
-    let path = paths::zones_dir(&identity).join(format!("{}.zone", name));
+    let path = paths::ensure_zones_dir(&identity).join(format!("{}.zone", name));
     fs::write(&path, &content).map_err(|e| e.to_string())?;
 
     Ok(content)
@@ -321,5 +503,56 @@ mod tests {
         let content = "just some text\nno serial here";
         let result = bump_serial(content);
         assert_eq!(result, content);
+    }
+
+    #[test]
+    fn format_zone_aligns_columns() {
+        let input = "www 3600 IN A 1.2.3.4\nmail 3600 IN MX 10 mail.example.com.\nns1 3600 IN A 5.6.7.8";
+        let result = format_zone(input);
+        assert_eq!(result, "www   3600  IN  A   1.2.3.4\nmail  3600  IN  MX  10  mail.example.com.\nns1   3600  IN  A   5.6.7.8");
+    }
+
+    #[test]
+    fn format_zone_preserves_blank_lines() {
+        let input = "www 3600 IN A 1.2.3.4\n\nns1 3600 IN A 5.6.7.8";
+        let result = format_zone(input);
+        assert!(result.contains("\n\n"), "got: {}", result);
+    }
+
+    #[test]
+    fn format_zone_preserves_comments() {
+        let input = "; this is a comment\nwww 3600 IN A 1.2.3.4";
+        let result = format_zone(input);
+        assert!(result.starts_with("; this is a comment\n"), "got: {}", result);
+    }
+
+    #[test]
+    fn format_zone_preserves_directives() {
+        let input = "$TTL 3600\n$ORIGIN example.com.\nwww 3600 IN A 1.2.3.4";
+        let result = format_zone(input);
+        assert!(result.starts_with("$TTL 3600\n$ORIGIN example.com.\n"), "got: {}", result);
+    }
+
+    #[test]
+    fn format_zone_preserves_soa_block() {
+        let input = "@  3600  IN  SOA  ns1.x.com. admin.x.com. (\n    1       ; Serial\n    3600    ; Refresh\n)\n@  3600  IN  NS  ns1.x.com.";
+        let result = format_zone(input);
+        assert!(result.contains("SOA  ns1.x.com. admin.x.com. ("), "got: {}", result);
+        assert!(result.contains("    1       ; Serial"), "got: {}", result);
+        assert!(result.contains(")"), "got: {}", result);
+    }
+
+    #[test]
+    fn format_zone_preserves_inline_comments() {
+        let input = "www 3600 IN A 1.2.3.4 ; web server";
+        let result = format_zone(input);
+        assert!(result.contains("; web server"), "got: {}", result);
+    }
+
+    #[test]
+    fn format_zone_handles_no_records() {
+        let input = "; just comments\n$TTL 3600";
+        let result = format_zone(input);
+        assert_eq!(result, input);
     }
 }

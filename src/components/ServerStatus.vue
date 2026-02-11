@@ -17,6 +17,7 @@ export default {
       portDraft: '',
       transferFromDraft: '',
       acceptTransfersDraft: false,
+      notifyServersDraft: [],
       copiedAddress: false,
       showNewServer: false,
       newName: '',
@@ -51,6 +52,15 @@ export default {
       this.portDraft = String(this.app.port)
       this.acceptTransfersDraft = this.app.acceptTransfers
       this.transferFromDraft = this.app.transferFrom || ''
+      this.notifyServersDraft = (this.app.notifyServers || []).map(s => {
+        const [addr, ...rest] = s.split(';')
+        const name = rest.join(';').trim()
+        const a = addr.trim()
+        const c = a.lastIndexOf(':')
+        return c > 0
+          ? { name, ip: a.slice(0, c), port: a.slice(c + 1) }
+          : { name, ip: a, port: '53' }
+      })
       this.copiedAddress = false
       this.confirmingDelete = false
       this.showSettings = true
@@ -68,6 +78,7 @@ export default {
       else if (field === 'port') this.portDraft = value
       else if (field === 'acceptTransfers') this.acceptTransfersDraft = value
       else if (field === 'transferFrom') this.transferFromDraft = value
+      else if (field === 'notifyServers') this.notifyServersDraft = value
     },
 
     async saveSettings() {
@@ -75,6 +86,10 @@ export default {
       if (!newPort || newPort < 1 || newPort > 65535) return
       const newName = this.nameDraft.trim()
       if (!newName) return
+
+      const newNotifyServers = this.notifyServersDraft
+        .filter(r => r.ip)
+        .map(r => r.name ? `${r.ip}:${r.port || '53'} ; ${r.name}` : `${r.ip}:${r.port || '53'}`)
 
       const nameChanged = newName !== this.app.identityName
       const portChanged = newPort !== this.app.port
@@ -100,6 +115,7 @@ export default {
         this.app.port = newPort
         this.app.acceptTransfers = this.acceptTransfersDraft
         this.app.transferFrom = this.transferFromDraft.trim()
+        this.app.notifyServers = newNotifyServers
 
         await this.app.saveConfig()
         this.app.updateTitle()
@@ -177,6 +193,7 @@ export default {
       this.newPort = String(this.app.port + 1)
       this.newAcceptTransfers = false
       this.newTransferFrom = ''
+      this.newNotifyServers = []
       this.newAutoBumpSerial = true
       this.showNewServer = true
 
@@ -192,6 +209,7 @@ export default {
       else if (field === 'port') this.newPort = value
       else if (field === 'acceptTransfers') this.newAcceptTransfers = value
       else if (field === 'transferFrom') this.newTransferFrom = value
+      else if (field === 'notifyServers') this.newNotifyServers = value
     },
 
     async confirmNewServer() {
@@ -207,6 +225,10 @@ export default {
           acceptTransfers: this.newAcceptTransfers,
           transferFrom: this.newTransferFrom.trim(),
           autoBumpSerial: true,
+          autoFormat: true,
+          notifyServers: (this.newNotifyServers || [])
+            .filter(r => r.ip)
+            .map(r => r.name ? `${r.ip}:${r.port || '53'} ; ${r.name}` : `${r.ip}:${r.port || '53'}`),
         })
         await this.app.switchIdentity(identity.id)
       } catch (e) {
@@ -309,13 +331,14 @@ export default {
       @click.self="showSettings = false"
       @keydown.escape="showSettings = false"
     >
-      <div class="bg-[#1e1e1e] border border-[#3e3e42] rounded-lg shadow-2xl p-6 w-full max-w-xs">
+      <div class="bg-[#1e1e1e] border border-[#3e3e42] rounded-lg shadow-2xl p-6 w-full max-w-md">
         <h2 class="text-sm font-semibold text-[#ddd] mb-4">Server Settings</h2>
         <ServerForm
           :name="nameDraft"
           :port="portDraft"
           :acceptTransfers="acceptTransfersDraft"
           :transferFrom="transferFromDraft"
+          :notifyServers="notifyServersDraft"
           :otherAddresses="otherAddresses"
           :showAddress="true"
           @update="onSettingsUpdate"
@@ -350,13 +373,14 @@ export default {
       @click.self="showNewServer = false"
       @keydown.escape="showNewServer = false"
     >
-      <div class="bg-[#1e1e1e] border border-[#3e3e42] rounded-lg shadow-2xl p-6 w-full max-w-xs">
+      <div class="bg-[#1e1e1e] border border-[#3e3e42] rounded-lg shadow-2xl p-6 w-full max-w-md">
         <h2 class="text-sm font-semibold text-[#ddd] mb-4">New Server</h2>
         <ServerForm
           :name="newName"
           :port="newPort"
           :acceptTransfers="newAcceptTransfers"
           :transferFrom="newTransferFrom"
+          :notifyServers="newNotifyServers"
           :otherAddresses="otherAddresses"
           @update="onNewServerUpdate"
           @submit="confirmNewServer"

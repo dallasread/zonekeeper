@@ -41,6 +41,9 @@ export default {
       acceptTransfers: false,
       transferFrom: '',
       autoBumpSerial: true,
+      autoFormat: true,
+      notifyServers: [],
+      zoneNotify: {},
       _drag: null,
       showNukeConfirm: false,
     }
@@ -169,6 +172,9 @@ export default {
       this.acceptTransfers = config.accept_transfers
       this.transferFrom = config.transfer_from
       this.autoBumpSerial = config.auto_bump_serial
+      this.autoFormat = config.auto_format !== false
+      this.notifyServers = config.notify_servers || []
+      this.zoneNotify = config.zone_notify || {}
     },
 
     saveConfig() {
@@ -178,6 +184,8 @@ export default {
         acceptTransfers: this.acceptTransfers,
         transferFrom: this.transferFrom,
         autoBumpSerial: this.autoBumpSerial,
+        autoFormat: this.autoFormat,
+        notifyServers: this.notifyServers,
       })
     },
 
@@ -233,7 +241,7 @@ export default {
       if (this._unlistenLog) this._unlistenLog()
       if (this._unlistenZones) this._unlistenZones()
 
-      // Clear zones (logs persist across identities)
+      const previousZoneName = this.selectedZone?.name
       this.selectedZone = null
       this.state.clear('zones')
 
@@ -245,6 +253,11 @@ export default {
         this.loadConfig(),
       ])
       this.updateTitle()
+
+      if (previousZoneName) {
+        const match = this.zones.find(z => z.name === previousZoneName)
+        if (match) this.selectedZone = match
+      }
 
       // Listen to new identity
       await this._listenToIdentity()

@@ -6,9 +6,20 @@ pub async fn get_config(identity: String) -> Result<config::Config, String> {
 }
 
 #[tauri::command]
-pub async fn set_config(identity: String, port: u16, notify_target: String, accept_transfers: bool, transfer_from: String, auto_bump_serial: bool) -> Result<(), String> {
+pub async fn set_config(identity: String, port: u16, notify_target: String, accept_transfers: bool, transfer_from: String, auto_bump_serial: bool, auto_format: bool, notify_servers: Vec<String>) -> Result<(), String> {
     let existing = config::read_config(&identity);
-    let cfg = config::Config { name: existing.name, port, font_size: existing.font_size, notify_target, accept_transfers, transfer_from, auto_bump_serial };
+    let cfg = config::Config { name: existing.name, port, font_size: existing.font_size, notify_target, accept_transfers, transfer_from, auto_bump_serial, auto_format, notify_servers, zone_notify: existing.zone_notify };
+    config::save_config(&identity, &cfg).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_zone_notify(identity: String, zone: String, targets: Vec<String>) -> Result<(), String> {
+    let mut cfg = config::read_config(&identity);
+    if targets.is_empty() {
+        cfg.zone_notify.remove(&zone);
+    } else {
+        cfg.zone_notify.insert(zone, targets);
+    }
     config::save_config(&identity, &cfg).map_err(|e| e.to_string())
 }
 

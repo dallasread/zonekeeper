@@ -41,13 +41,6 @@ fn rand_id() -> u16 {
     (t & 0xFFFF) as u16
 }
 
-fn is_loopback_target(addr: &std::net::SocketAddr) -> bool {
-    match addr {
-        std::net::SocketAddr::V4(a) => a.ip().is_loopback(),
-        std::net::SocketAddr::V6(a) => a.ip().is_loopback(),
-    }
-}
-
 fn send_udp_notify(pkt: &[u8], addr: &std::net::SocketAddr) -> Result<String, String> {
     let bind_addr = match addr {
         std::net::SocketAddr::V6(_) => "[::]:0",
@@ -61,13 +54,30 @@ fn send_udp_notify(pkt: &[u8], addr: &std::net::SocketAddr) -> Result<String, St
     match socket.recv_from(&mut buf) {
         Ok((len, _)) if len >= 4 => {
             let rcode = buf[3] & 0x0F;
+            let rcode_name = match rcode {
+                0 => "NoError",
+                1 => "FormErr",
+                2 => "ServFail",
+                3 => "NXDomain",
+                4 => "NotImp",
+                5 => "Refused",
+                _ => "Unknown",
+            };
             match rcode {
                 0 => Ok(format!("NOTIFY accepted by {}", addr)),
-                _ => Err(format!("NOTIFY refused by {} (rcode={})", addr, rcode)),
+                5 => Err(format!("Refused by {} — not recognized as primary", addr)),
+                _ => Err(format!("NOTIFY to {} failed: {} (rcode={})", addr, rcode_name, rcode)),
             }
         }
         Ok(_) => Err(format!("Invalid response from {}", addr)),
-        Err(_) => Ok(format!("NOTIFY sent to {} (no response)", addr)),
+        Err(e) => Err(format!("No response from {} ({})", addr, e.kind())),
+    }
+}
+
+fn is_loopback(addr: &std::net::SocketAddr) -> bool {
+    match addr {
+        std::net::SocketAddr::V4(a) => a.ip().is_loopback(),
+        std::net::SocketAddr::V6(a) => a.ip().is_loopback(),
     }
 }
 
@@ -83,37 +93,31 @@ pub async fn send_notify(zone: String, target: String, identity: String, coredns
     let addr: std::net::SocketAddr = target.parse().map_err(|e| format!("Invalid target: {}", e))?;
     let pkt = build_notify_packet(&zone);
 
-    if !is_loopback_target(&addr) {
+    if !is_loopback(&addr) {
         return send_udp_notify(&pkt, &addr);
     }
 
-    // Loopback target — try Docker proxy, fall back to direct send
-    let proxy = match docker_proxy::status(&identity) {
-        Some(info) => Some(info),
-        None => {
-            match docker_proxy::detect_target(addr.port()) {
-                Ok(docker_target) => Some(docker_proxy::start(
+    // Loopback — only use Docker proxy if there's actually a container on this port
+    match docker_proxy::detect_target(addr.port()) {
+        Ok(docker_target) => {
+            let proxy = match docker_proxy::status(&identity) {
+                Some(info) => info,
+                None => docker_proxy::start(
                     &identity,
                     &docker_target.network,
                     &docker_target.container_ip,
                     docker_target.internal_port,
                     coredns_port,
-                ).map_err(|e| format!("Docker proxy failed to start: {}", e))?),
-                Err(_) => None,
-            }
+                ).map_err(|e| format!("Docker proxy failed to start: {}", e))?,
+            };
+            let proxy_addr: std::net::SocketAddr = format!("127.0.0.1:{}", proxy.mapped_port)
+                .parse().map_err(|e| format!("Invalid proxy address: {}", e))?;
+            send_udp_notify(&pkt, &proxy_addr)
+                .map(|_| format!("NOTIFY accepted by {} (via Docker proxy)", addr))
+                .map_err(|e| e.replace(&proxy_addr.to_string(), &addr.to_string()))
         }
-    };
-
-    if proxy.is_none() {
-        return send_udp_notify(&pkt, &addr);
+        Err(_) => send_udp_notify(&pkt, &addr),
     }
-    let proxy = proxy.unwrap();
-
-    let proxy_addr: std::net::SocketAddr = format!("127.0.0.1:{}", proxy.mapped_port)
-        .parse().map_err(|e| format!("Invalid proxy address: {}", e))?;
-
-    let result = send_udp_notify(&pkt, &proxy_addr)?;
-    Ok(format!("{}. Master IP: {}:{}", result, proxy.bridge_ip, coredns_port))
 }
 
 #[tauri::command]

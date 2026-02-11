@@ -4,6 +4,7 @@ use tauri::{AppHandle, Emitter, State};
 use crate::config;
 use crate::coredns::corefile;
 use crate::coredns::process::CoreDnsProcess;
+use crate::docker_proxy;
 use super::zones;
 
 pub struct ServerState(pub Mutex<HashMap<String, CoreDnsProcess>>);
@@ -22,6 +23,9 @@ pub async fn start_server(identity: String, port: u16, app: AppHandle, state: St
     let zone_names = zones::zone_names(&identity).map_err(|e| e.to_string())?;
     let cfg = config::read_config(&identity);
     corefile::write_corefile(&identity, &zone_names, port, cfg.accept_transfers, &cfg.transfer_from).map_err(|e| e.to_string())?;
+
+    // Kill stale proxy — Docker container IPs may have changed since last run
+    let _ = docker_proxy::stop(&identity);
 
     let process = CoreDnsProcess::start(app, &identity, port).map_err(|e| e.to_string())?;
     guard.insert(identity, process);

@@ -95,15 +95,15 @@ export default class Commands {
     return invoke('server_status', { identity })
   }
 
-  async getConfig(): Promise<{ name: string; port: number; font_size: number; notify_target: string; accept_transfers: boolean; transfer_from: string; auto_bump_serial: boolean }> {
+  async getConfig(): Promise<{ name: string; port: number; font_size: number; notify_target: string; accept_transfers: boolean; transfer_from: string; auto_bump_serial: boolean; notify_servers: string[]; zone_notify: Record<string, string[]> }> {
     return invoke('get_config', { identity: this.getIdentity() })
   }
 
-  async getConfigFor(identity: string): Promise<{ name: string; port: number; font_size: number; notify_target: string; accept_transfers: boolean; transfer_from: string; auto_bump_serial: boolean }> {
+  async getConfigFor(identity: string): Promise<{ name: string; port: number; font_size: number; notify_target: string; accept_transfers: boolean; transfer_from: string; auto_bump_serial: boolean; notify_servers: string[]; zone_notify: Record<string, string[]> }> {
     return invoke('get_config', { identity })
   }
 
-  async saveConfig(config: { port: number; notifyTarget: string; acceptTransfers: boolean; transferFrom: string; autoBumpSerial: boolean }) {
+  async saveConfig(config: { port: number; notifyTarget: string; acceptTransfers: boolean; transferFrom: string; autoBumpSerial: boolean; autoFormat: boolean; notifyServers: string[] }) {
     await invoke('set_config', {
       identity: this.getIdentity(),
       port: config.port,
@@ -111,10 +111,12 @@ export default class Commands {
       acceptTransfers: config.acceptTransfers,
       transferFrom: config.transferFrom,
       autoBumpSerial: config.autoBumpSerial,
+      autoFormat: config.autoFormat,
+      notifyServers: config.notifyServers,
     })
   }
 
-  async saveConfigFor(identity: string, config: { port: number; notifyTarget: string; acceptTransfers: boolean; transferFrom: string; autoBumpSerial: boolean }) {
+  async saveConfigFor(identity: string, config: { port: number; notifyTarget: string; acceptTransfers: boolean; transferFrom: string; autoBumpSerial: boolean; autoFormat: boolean; notifyServers: string[] }) {
     await invoke('set_config', {
       identity,
       port: config.port,
@@ -122,7 +124,13 @@ export default class Commands {
       acceptTransfers: config.acceptTransfers,
       transferFrom: config.transferFrom,
       autoBumpSerial: config.autoBumpSerial,
+      autoFormat: config.autoFormat,
+      notifyServers: config.notifyServers,
     })
+  }
+
+  async setZoneNotify(zone: string, targets: string[]) {
+    await invoke('set_zone_notify', { identity: this.getIdentity(), zone, targets })
   }
 
   async getAppConfig(): Promise<{ font_size: number }> {

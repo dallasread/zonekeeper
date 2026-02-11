@@ -9,6 +9,9 @@ pub struct IdentityInfo {
 }
 
 fn app_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("ZONEKEEPER_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("Library/Application Support/zonekeeper")
@@ -25,7 +28,11 @@ pub fn ensure_identity_dir(identity: &str) -> PathBuf {
 }
 
 pub fn zones_dir(identity: &str) -> PathBuf {
-    let dir = identity_dir(identity).join("zones");
+    identity_dir(identity).join("zones")
+}
+
+pub fn ensure_zones_dir(identity: &str) -> PathBuf {
+    let dir = zones_dir(identity);
     fs::create_dir_all(&dir).ok();
     dir
 }
@@ -127,29 +134,49 @@ pub fn migrate_legacy_layout() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_temp_dir(f: impl FnOnce()) {
+        let _lock = TEST_LOCK.lock().unwrap();
+        let tmp = std::env::temp_dir().join(format!("zk-test-{}", std::process::id()));
+        std::env::set_var("ZONEKEEPER_DATA_DIR", &tmp);
+        f();
+        std::env::remove_var("ZONEKEEPER_DATA_DIR");
+        let _ = fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn identity_dir_contains_id() {
-        let dir = identity_dir("abc-123");
-        assert!(dir.to_string_lossy().contains("identities/abc-123"));
+        with_temp_dir(|| {
+            let dir = identity_dir("abc-123");
+            assert!(dir.to_string_lossy().contains("identities/abc-123"));
+        });
     }
 
     #[test]
     fn zones_dir_is_under_identity() {
-        let dir = zones_dir("myid");
-        assert!(dir.to_string_lossy().contains("identities/myid/zones"));
+        with_temp_dir(|| {
+            let dir = zones_dir("myid");
+            assert!(dir.to_string_lossy().contains("identities/myid/zones"));
+        });
     }
 
     #[test]
     fn config_path_is_under_identity() {
-        let path = config_path("some-uuid");
-        assert!(path.to_string_lossy().contains("identities/some-uuid/config.json"));
+        with_temp_dir(|| {
+            let path = config_path("some-uuid");
+            assert!(path.to_string_lossy().contains("identities/some-uuid/config.json"));
+        });
     }
 
     #[test]
     fn create_identity_returns_uuid() {
-        let info = create_identity("test-server");
-        assert!(uuid::Uuid::parse_str(&info.id).is_ok());
-        assert_eq!(info.name, "test-server");
+        with_temp_dir(|| {
+            let info = create_identity("test-server");
+            assert!(uuid::Uuid::parse_str(&info.id).is_ok());
+            assert_eq!(info.name, "test-server");
+        });
     }
 }
