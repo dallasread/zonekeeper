@@ -397,8 +397,20 @@ fn axfr_to_bind(raw: &str, zone: &str) -> Result<String, String> {
     Ok(out.join("\n") + "\n")
 }
 
+fn find_dig() -> &'static str {
+    static DIG: std::sync::OnceLock<&str> = std::sync::OnceLock::new();
+    DIG.get_or_init(|| {
+        for path in ["/opt/homebrew/bin/dig", "/usr/local/bin/dig"] {
+            if std::path::Path::new(path).exists() {
+                return path;
+            }
+        }
+        "dig"
+    })
+}
+
 fn axfr_from(host: &str, dig_port: &str, name: &str) -> Result<String, String> {
-    let output = std::process::Command::new("dig")
+    let output = std::process::Command::new(find_dig())
         .arg(format!("@{}", host))
         .arg("-p").arg(dig_port)
         .arg("axfr").arg(name)
@@ -440,6 +452,12 @@ pub async fn pull_zone(identity: String, name: String, port: u16) -> Result<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_dig_returns_a_path() {
+        let dig = find_dig();
+        assert!(std::path::Path::new(dig).exists() || dig == "dig");
+    }
 
     #[test]
     fn axfr_to_bind_relativises_names() {
